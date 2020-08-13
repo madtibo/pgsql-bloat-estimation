@@ -12,7 +12,7 @@ SELECT current_database(), nspname AS schemaname, tblname, idxname, bs*(relpages
   100 * (relpages-est_pages_ff)::float / relpages AS bloat_ratio,
   is_na
   -- , 100-(pst).avg_leaf_density AS pst_avg_bloat, est_pages, index_tuple_hdr_bm, maxalign, pagehdr, nulldatawidth, nulldatahdrwidth, reltuples, relpages -- (DEBUG INFO)
-FROM (
+FROM /* relation_stats */ (
   SELECT coalesce(1 +
          ceil(reltuples/floor((bs-pageopqdata-pagehdr)/(4+nulldatahdrwidth)::float)), 0 -- ItemIdData size + computed avg size of a tuple (nulldatahdrwidth)
       ) AS est_pages,
@@ -21,7 +21,7 @@ FROM (
       ) AS est_pages_ff,
       bs, nspname, tblname, idxname, relpages, fillfactor, is_na
       -- , pgstatindex(idxoid) AS pst, index_tuple_hdr_bm, maxalign, pagehdr, nulldatawidth, nulldatahdrwidth, reltuples -- (DEBUG INFO)
-  FROM (
+  FROM /* rows_hdr_pdg_stats */ (
       SELECT maxalign, bs, nspname, tblname, idxname, reltuples, relpages, idxoid, fillfactor,
             ( index_tuple_hdr_bm +
                 maxalign - CASE -- Add padding to the index tuple header to align on MAXALIGN
@@ -35,7 +35,7 @@ FROM (
                 END
             )::numeric AS nulldatahdrwidth, pagehdr, pageopqdata, is_na
             -- , index_tuple_hdr_bm, nulldatawidth -- (DEBUG INFO)
-      FROM (
+      FROM /* rows_data_stats */ (
           SELECT n.nspname, i.tblname, i.idxname, i.reltuples, i.relpages,
               i.idxoid, i.fillfactor, current_setting('block_size')::numeric AS bs,
               CASE -- MAXALIGN: 4 on 32bits, 8 on 64bits (and mingw32 ?)
@@ -54,17 +54,17 @@ FROM (
               /* data len: we remove null values save space using it fractionnal part from stats */
               sum( (1-coalesce(s.null_frac, 0)) * coalesce(s.avg_width, 1024)) AS nulldatawidth,
               max( CASE WHEN i.atttypid = 'pg_catalog.name'::regtype THEN 1 ELSE 0 END ) > 0 AS is_na
-          FROM (
+          FROM /* i */ (
               SELECT ct.relname AS tblname, ct.relnamespace, ic.idxname, ic.attpos, ic.indkey, ic.indkey[ic.attpos], ic.reltuples, ic.relpages, ic.tbloid, ic.idxoid, ic.fillfactor,
                   coalesce(a1.attnum, a2.attnum) AS attnum, coalesce(a1.attname, a2.attname) AS attname, coalesce(a1.atttypid, a2.atttypid) AS atttypid,
                   CASE WHEN a1.attnum IS NULL
                   THEN ic.idxname
                   ELSE ct.relname
                   END AS attrelname
-              FROM (
+              FROM /*ic */ (
                   SELECT idxname, reltuples, relpages, tbloid, idxoid, fillfactor, indkey,
                       pg_catalog.generate_series(1,indnatts) AS attpos
-                  FROM (
+                  FROM /* idx_data */ (
                       SELECT ci.relname AS idxname, ci.reltuples, ci.relpages, i.indrelid AS tbloid,
                           i.indexrelid AS idxoid,
                           coalesce(substring(
