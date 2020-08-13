@@ -36,32 +36,13 @@ FROM /* relation_stats */ (
             )::numeric AS nulldatahdrwidth, pagehdr, pageopqdata, is_na
             -- , index_tuple_hdr_bm, nulldatawidth -- (DEBUG INFO)
       FROM /* rows_data_stats */ (
-          SELECT n.nspname, i.tblname, i.idxname, i.reltuples, i.relpages,
-              i.idxoid, i.fillfactor, current_setting('block_size')::numeric AS bs,
-              CASE -- MAXALIGN: 4 on 32bits, 8 on 64bits (and mingw32 ?)
-                WHEN version() ~ 'mingw32' OR version() ~ '64-bit|x86_64|ppc64|ia64|amd64' THEN 8
-                ELSE 4
-              END AS maxalign,
-              /* per page header, fixed size: 20 for 7.X, 24 for others */
-              24 AS pagehdr,
-              /* per page btree opaque data */
-              16 AS pageopqdata,
-              /* per tuple header: add IndexAttributeBitMapData if some cols are null-able */
-              CASE WHEN max(coalesce(s.null_frac,0)) = 0
-                  THEN 2 -- IndexTupleData size
-                  ELSE 2 + (( 32 + 8 - 1 ) / 8) -- IndexTupleData size + IndexAttributeBitMapData size ( max num filed per index + 8 - 1 /8)
-              END AS index_tuple_hdr_bm,
-              /* data len: we remove null values save space using it fractionnal part from stats */
-              sum( (1-coalesce(s.null_frac, 0)) * coalesce(s.avg_width, 1024)) AS nulldatawidth,
-              max( CASE WHEN i.atttypid = 'pg_catalog.name'::regtype THEN 1 ELSE 0 END ) > 0 AS is_na
-          FROM /* i */ (
-              SELECT ct.relname AS tblname, ct.relnamespace, ic.idxname, ic.attpos, ic.indkey, ic.indkey[ic.attpos], ic.reltuples, ic.relpages, ic.tbloid, ic.idxoid, ic.fillfactor,
-                  coalesce(a1.attnum, a2.attnum) AS attnum, coalesce(a1.attname, a2.attname) AS attname, coalesce(a1.atttypid, a2.atttypid) AS atttypid,
-                  CASE WHEN a1.attnum IS NULL
-                  THEN ic.idxname
-                  ELSE ct.relname
-                  END AS attrelname
-              FROM /*ic */ (
+          WITH i AS (
+              SELECT ct.relname AS tblname, ct.relnamespace, ic.idxname, ic.attpos, ic.indkey,
+                ic.indkey[ic.attpos], ic.reltuples, ic.relpages, ic.tbloid, ic.idxoid, ic.fillfactor,
+                  coalesce(a1.attnum, a2.attnum) AS attnum, coalesce(a1.attname, a2.attname) AS attname,
+                coalesce(a1.atttypid, a2.atttypid) AS atttypid,
+                  CASE WHEN a1.attnum IS NULL THEN ic.idxname ELSE ct.relname END AS attrelname
+              FROM /* ic */ (
                   SELECT idxname, reltuples, relpages, tbloid, idxoid, fillfactor, indkey,
                       pg_catalog.generate_series(1,indnatts) AS attpos
                   FROM /* idx_data */ (
@@ -88,7 +69,26 @@ FROM /* relation_stats */ (
                   ic.indkey[ic.attpos] = 0
                   AND a2.attrelid = ic.idxoid
                   AND a2.attnum = ic.attpos
-            ) i
+          ) /* i CTE */
+          SELECT n.nspname, i.tblname, i.idxname, i.reltuples, i.relpages,
+              i.idxoid, i.fillfactor, current_setting('block_size')::numeric AS bs,
+              CASE -- MAXALIGN: 4 on 32bits, 8 on 64bits (and mingw32 ?)
+                WHEN version() ~ 'mingw32' OR version() ~ '64-bit|x86_64|ppc64|ia64|amd64' THEN 8
+                ELSE 4
+              END AS maxalign,
+              /* per page header, fixed size: 20 for 7.X, 24 for others */
+              24 AS pagehdr,
+              /* per page btree opaque data */
+              16 AS pageopqdata,
+              /* per tuple header: add IndexAttributeBitMapData if some cols are null-able */
+              CASE WHEN max(coalesce(s.null_frac,0)) = 0
+                  THEN 2 -- IndexTupleData size
+                  ELSE 2 + (( 32 + 8 - 1 ) / 8) -- IndexTupleData size + IndexAttributeBitMapData size ( max num filed per index + 8 - 1 /8)
+              END AS index_tuple_hdr_bm,
+              /* data len: we remove null values save space using it fractionnal part from stats */
+              sum( (1-coalesce(s.null_frac, 0)) * coalesce(s.avg_width, 1024)) AS nulldatawidth,
+              max( CASE WHEN i.atttypid = 'pg_catalog.name'::regtype THEN 1 ELSE 0 END ) > 0 AS is_na
+          FROM i
             JOIN pg_catalog.pg_namespace n ON n.oid = i.relnamespace
             JOIN pg_catalog.pg_stats s ON s.schemaname = n.nspname
                                       AND s.tablename = i.attrelname
